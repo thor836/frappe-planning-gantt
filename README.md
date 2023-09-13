@@ -1,19 +1,9 @@
-<div align="center">
-    <img src="https://github.com/frappe/design/blob/master/logos/logo-2019/frappe-gantt-logo.png" height="128">
-    <h2>Frappe Gantt</h2>
-    <p align="center">
-        <p>A simple, interactive, modern gantt chart library for the web</p>
-        <a href="https://frappe.github.io/gantt">
-            <b>View the demo »</b>
-        </a>
-    </p>
+<div align="center">    
+    <h2>Planning Gantt</h2>
+    <p>Based on <a href="https://github.com/frappe/gantt">Frape Gantt</a></p>    
 </div>
 
-<p align="center">
-    <a href="https://frappe.github.io/gantt">
-        <img src="https://cloud.githubusercontent.com/assets/9355208/21537921/4a38b194-cdbd-11e6-8110-e0da19678a6d.png">
-    </a>
-</p>
+Added support for categories and tasks combination per category.
 
 ### Install
 ```
@@ -30,17 +20,39 @@ Include it in your HTML:
 And start hacking:
 ```js
 var tasks = [
-  {
-    id: 'Task 1',
-    name: 'Redesign website',
-    start: '2016-12-28',
-    end: '2016-12-31',
-    progress: 20,
-    dependencies: 'Task 2, Task 3',
-    custom_class: 'bar-milestone' // optional
-  },
-  ...
-]
+			{
+				name: "Category 1",
+				items: [{
+					start: '2018-10-01',
+					end: '2018-10-08',
+					name: 'Jhon Doe 01',
+					id: "Task 01",
+				},{
+					start: '2018-10-10',
+					end: '2018-10-28',
+					name: 'Jhon Doe 02',
+					id: "Task 02",
+				},{
+					start: '2018-11-05',
+					end: '2018-12-11',
+					name: 'Jhon Doe 03',
+					id: "Task 03",
+				}]
+			},
+			{
+				name: "Category 2",
+				items: [{
+					start: '2018-10-03',
+					end: '2018-10-16',
+					name: 'Donald Duck',
+					id: "Task 1",
+					progress: 0,
+				}]
+			},
+			{
+				name: 'Category 3'
+			},
+		]
 var gantt = new Gantt("#gantt", tasks);
 ```
 
@@ -70,30 +82,6 @@ If you want to contribute enhancements or fixes:
 3. `yarn`
 4. `yarn run dev`
 5. Open `index.html` in your browser, make your code changes and test them.
-
-### Publishing
-If you have publishing rights (Frappe Team), follow these steps to publish a new version.
-
-Assuming the last commit (or a couple of commits) were enhancements or fixes,
-
-1. Run `yarn build`
-
-   This will generate files in the `dist/` folder. These files need to be committed.
-1. Run `yarn publish`
-1. Type the new version at the prompt
-
-   Depending on the type of change, you can either bump the patch version or the minor version.
-   For e.g.,
-   ```
-   0.5.0 -> 0.6.0 (minor version bump)
-   0.5.0 -> 0.5.1 (patch version bump)
-   ```
-1. Now, there will be a commit named after the version you just entered. Include the generated files in `dist/` folder as part of this commit by running the command:
-   ```
-   git add dist
-   git commit --amend
-   git push origin master
-   ```
 
 License: MIT
 

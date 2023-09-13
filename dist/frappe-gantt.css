@@ -1,3 +1,35 @@
+.gantt-main-container {
+  display: flex;
+  overflow: hidden;
+  width: 100%;
+}
+.gantt-main-container .gantt-categories-container {
+  min-width: 250px;
+  width: auto;
+  background-color: red;
+  padding-top: 60px;
+  border-right: 1px solid #ebeff2;
+}
+.gantt-main-container .gantt-categories-container .gantt-category {
+  height: 37px;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  background-color: #ffffff;
+  border-bottom: 1px solid #ebeff2;
+  padding-left: 10px;
+  text-overflow: ellipsis;
+  overflow-x: hidden;
+}
+.gantt-main-container .gantt-categories-container .gantt-category.gantt-category-item {
+  font-weight: 400;
+  padding-left: 20px;
+}
+.gantt-main-container .gantt-container-wrapper {
+  flex-grow: 1;
+  overflow: auto;
+}
+
 .gantt .grid-background {
   fill: none;
 }

@@ -1,6 +1,235 @@
 var Gantt = (function () {
     'use strict';
 
+    function $(expr, con) {
+        return typeof expr === 'string'
+            ? (con || document).querySelector(expr)
+            : expr || null;
+    }
+
+    function createSVG(tag, attrs) {
+        const elem = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (let attr in attrs) {
+            if (attr === 'append_to') {
+                const parent = attrs.append_to;
+                parent.appendChild(elem);
+            } else if (attr === 'innerHTML') {
+                elem.innerHTML = attrs.innerHTML;
+            } else {
+                elem.setAttribute(attr, attrs[attr]);
+            }
+        }
+        return elem;
+    }
+
+    function animateSVG(svgElement, attr, from, to) {
+        const animatedSvgElement = getAnimationElement(svgElement, attr, from, to);
+
+        if (animatedSvgElement === svgElement) {
+            // triggered 2nd time programmatically
+            // trigger artificial click event
+            const event = document.createEvent('HTMLEvents');
+            event.initEvent('click', true, true);
+            event.eventName = 'click';
+            animatedSvgElement.dispatchEvent(event);
+        }
+    }
+
+    function getAnimationElement(
+        svgElement,
+        attr,
+        from,
+        to,
+        dur = '0.4s',
+        begin = '0.1s'
+    ) {
+        const animEl = svgElement.querySelector('animate');
+        if (animEl) {
+            $.attr(animEl, {
+                attributeName: attr,
+                from,
+                to,
+                dur,
+                begin: 'click + ' + begin, // artificial click
+            });
+            return svgElement;
+        }
+
+        const animateElement = createSVG('animate', {
+            attributeName: attr,
+            from,
+            to,
+            dur,
+            begin,
+            calcMode: 'spline',
+            values: from + ';' + to,
+            keyTimes: '0; 1',
+            keySplines: cubic_bezier('ease-out'),
+        });
+        svgElement.appendChild(animateElement);
+
+        return svgElement;
+    }
+
+    function cubic_bezier(name) {
+        return {
+            ease: '.25 .1 .25 1',
+            linear: '0 0 1 1',
+            'ease-in': '.42 0 1 1',
+            'ease-out': '0 0 .58 1',
+            'ease-in-out': '.42 0 .58 1',
+        }[name];
+    }
+
+    $.on = (element, event, selector, callback) => {
+        if (!callback) {
+            callback = selector;
+            $.bind(element, event, callback);
+        } else {
+            $.delegate(element, event, selector, callback);
+        }
+    };
+
+    $.off = (element, event, handler) => {
+        element.removeEventListener(event, handler);
+    };
+
+    $.bind = (element, event, callback) => {
+        event.split(/\s+/).forEach(function (event) {
+            element.addEventListener(event, callback);
+        });
+    };
+
+    $.delegate = (element, event, selector, callback) => {
+        element.addEventListener(event, function (e) {
+            const delegatedTarget = e.target.closest(selector);
+            if (delegatedTarget) {
+                e.delegatedTarget = delegatedTarget;
+                callback.call(this, e, delegatedTarget);
+            }
+        });
+    };
+
+    $.closest = (selector, element) => {
+        if (!element) return null;
+
+        if (element.matches(selector)) {
+            return element;
+        }
+
+        return $.closest(selector, element.parentNode);
+    };
+
+    $.attr = (element, attr, value) => {
+        if (!value && typeof attr === 'string') {
+            return element.getAttribute(attr);
+        }
+
+        if (typeof attr === 'object') {
+            for (let key in attr) {
+                $.attr(element, key, attr[key]);
+            }
+            return;
+        }
+
+        element.setAttribute(attr, value);
+    };
+
+    class Arrow {
+        constructor(gantt, from_task, to_task) {
+            this.gantt = gantt;
+            this.from_task = from_task;
+            this.to_task = to_task;
+
+            this.calculate_path();
+            this.draw();
+        }
+
+        calculate_path() {
+            let start_x =
+                this.from_task.$bar.getX() + this.from_task.$bar.getWidth() / 2;
+
+            const condition = () =>
+                this.to_task.$bar.getX() < start_x + this.gantt.options.padding &&
+                start_x > this.from_task.$bar.getX() + this.gantt.options.padding;
+
+            while (condition()) {
+                start_x -= 10;
+            }
+
+            const start_y =
+                this.gantt.options.header_height +
+                this.gantt.options.bar_height +
+                (this.gantt.options.padding + this.gantt.options.bar_height) *
+                    this.from_task.task._index +
+                this.gantt.options.padding;
+
+            const end_x = this.to_task.$bar.getX() - this.gantt.options.padding / 2;
+            const end_y =
+                this.gantt.options.header_height +
+                this.gantt.options.bar_height / 2 +
+                (this.gantt.options.padding + this.gantt.options.bar_height) *
+                    this.to_task.task._index +
+                this.gantt.options.padding;
+
+            const from_is_below_to =
+                this.from_task.task._index > this.to_task.task._index;
+            const curve = this.gantt.options.arrow_curve;
+            const clockwise = from_is_below_to ? 1 : 0;
+            const curve_y = from_is_below_to ? -curve : curve;
+            const offset = from_is_below_to
+                ? end_y + this.gantt.options.arrow_curve
+                : end_y - this.gantt.options.arrow_curve;
+
+            this.path = `
+            M ${start_x} ${start_y}
+            V ${offset}
+            a ${curve} ${curve} 0 0 ${clockwise} ${curve} ${curve_y}
+            L ${end_x} ${end_y}
+            m -5 -5
+            l 5 5
+            l -5 5`;
+
+            if (
+                this.to_task.$bar.getX() <
+                this.from_task.$bar.getX() + this.gantt.options.padding
+            ) {
+                const down_1 = this.gantt.options.padding / 2 - curve;
+                const down_2 =
+                    this.to_task.$bar.getY() +
+                    this.to_task.$bar.getHeight() / 2 -
+                    curve_y;
+                const left = this.to_task.$bar.getX() - this.gantt.options.padding;
+
+                this.path = `
+                M ${start_x} ${start_y}
+                v ${down_1}
+                a ${curve} ${curve} 0 0 1 -${curve} ${curve}
+                H ${left}
+                a ${curve} ${curve} 0 0 ${clockwise} -${curve} ${curve_y}
+                V ${down_2}
+                a ${curve} ${curve} 0 0 ${clockwise} ${curve} ${curve_y}
+                L ${end_x} ${end_y}
+                m -5 -5
+                l 5 5
+                l -5 5`;
+            }
+        }
+
+        draw() {
+            this.element = createSVG('path', {
+                d: this.path,
+                'data-from': this.from_task.task.id,
+                'data-to': this.to_task.task.id,
+            });
+        }
+
+        update() {
+            this.calculate_path();
+            this.element.setAttribute('d', this.path);
+        }
+    }
+
     const YEAR = 'year';
     const MONTH = 'month';
     const DAY = 'day';
@@ -233,643 +462,418 @@ var Gantt = (function () {
         }
     }
 
-    function $(expr, con) {
-        return typeof expr === 'string'
-            ? (con || document).querySelector(expr)
-            : expr || null;
-    }
-
-    function createSVG(tag, attrs) {
-        const elem = document.createElementNS('http://www.w3.org/2000/svg', tag);
-        for (let attr in attrs) {
-            if (attr === 'append_to') {
-                const parent = attrs.append_to;
-                parent.appendChild(elem);
-            } else if (attr === 'innerHTML') {
-                elem.innerHTML = attrs.innerHTML;
-            } else {
-                elem.setAttribute(attr, attrs[attr]);
-            }
-        }
-        return elem;
-    }
-
-    function animateSVG(svgElement, attr, from, to) {
-        const animatedSvgElement = getAnimationElement(svgElement, attr, from, to);
-
-        if (animatedSvgElement === svgElement) {
-            // triggered 2nd time programmatically
-            // trigger artificial click event
-            const event = document.createEvent('HTMLEvents');
-            event.initEvent('click', true, true);
-            event.eventName = 'click';
-            animatedSvgElement.dispatchEvent(event);
-        }
-    }
-
-    function getAnimationElement(
-        svgElement,
-        attr,
-        from,
-        to,
-        dur = '0.4s',
-        begin = '0.1s'
-    ) {
-        const animEl = svgElement.querySelector('animate');
-        if (animEl) {
-            $.attr(animEl, {
-                attributeName: attr,
-                from,
-                to,
-                dur,
-                begin: 'click + ' + begin, // artificial click
-            });
-            return svgElement;
-        }
-
-        const animateElement = createSVG('animate', {
-            attributeName: attr,
-            from,
-            to,
-            dur,
-            begin,
-            calcMode: 'spline',
-            values: from + ';' + to,
-            keyTimes: '0; 1',
-            keySplines: cubic_bezier('ease-out'),
-        });
-        svgElement.appendChild(animateElement);
-
-        return svgElement;
-    }
-
-    function cubic_bezier(name) {
-        return {
-            ease: '.25 .1 .25 1',
-            linear: '0 0 1 1',
-            'ease-in': '.42 0 1 1',
-            'ease-out': '0 0 .58 1',
-            'ease-in-out': '.42 0 .58 1',
-        }[name];
-    }
-
-    $.on = (element, event, selector, callback) => {
-        if (!callback) {
-            callback = selector;
-            $.bind(element, event, callback);
-        } else {
-            $.delegate(element, event, selector, callback);
-        }
-    };
-
-    $.off = (element, event, handler) => {
-        element.removeEventListener(event, handler);
-    };
-
-    $.bind = (element, event, callback) => {
-        event.split(/\s+/).forEach(function (event) {
-            element.addEventListener(event, callback);
-        });
-    };
-
-    $.delegate = (element, event, selector, callback) => {
-        element.addEventListener(event, function (e) {
-            const delegatedTarget = e.target.closest(selector);
-            if (delegatedTarget) {
-                e.delegatedTarget = delegatedTarget;
-                callback.call(this, e, delegatedTarget);
-            }
-        });
-    };
-
-    $.closest = (selector, element) => {
-        if (!element) return null;
-
-        if (element.matches(selector)) {
-            return element;
-        }
-
-        return $.closest(selector, element.parentNode);
-    };
-
-    $.attr = (element, attr, value) => {
-        if (!value && typeof attr === 'string') {
-            return element.getAttribute(attr);
-        }
-
-        if (typeof attr === 'object') {
-            for (let key in attr) {
-                $.attr(element, key, attr[key]);
-            }
-            return;
-        }
-
-        element.setAttribute(attr, value);
-    };
-
     class Bar {
-        constructor(gantt, task) {
-            this.set_defaults(gantt, task);
-            this.prepare();
-            this.draw();
-            this.bind();
+      constructor(gantt, task, options) {
+        this.options = { enable_labels: true, ...(options ?? {}) };
+        this.set_defaults(gantt, task);
+        this.prepare();
+        this.draw();
+        this.bind();
+      }
+
+      set_defaults(gantt, task) {
+        this.action_completed = false;
+        this.gantt = gantt;
+        this.task = task;
+      }
+
+      prepare() {
+        this.prepare_values();
+        this.prepare_helpers();
+      }
+
+      prepare_values() {
+        this.invalid = this.task.invalid;
+        this.height = this.gantt.options.bar_height;
+        this.x = this.compute_x();
+        this.y = this.compute_y();
+        this.corner_radius = this.gantt.options.bar_corner_radius;
+        this.duration =
+          date_utils.diff(this.task._end, this.task._start, "hour") /
+          this.gantt.options.step;
+        this.width = this.gantt.options.column_width * this.duration;
+        this.progress_width =
+          this.gantt.options.column_width *
+            this.duration *
+            (this.task.progress / 100) || 0;
+        this.group = createSVG("g", {
+          class: "bar-wrapper " + (this.task.custom_class || ""),
+          "data-id": this.task.id,
+        });
+        this.bar_group = createSVG("g", {
+          class: "bar-group",
+          append_to: this.group,
+        });
+        this.handle_group = createSVG("g", {
+          class: "handle-group",
+          append_to: this.group,
+        });
+      }
+
+      prepare_helpers() {
+        SVGElement.prototype.getX = function () {
+          return +this.getAttribute("x");
+        };
+        SVGElement.prototype.getY = function () {
+          return +this.getAttribute("y");
+        };
+        SVGElement.prototype.getWidth = function () {
+          return +this.getAttribute("width");
+        };
+        SVGElement.prototype.getHeight = function () {
+          return +this.getAttribute("height");
+        };
+        SVGElement.prototype.getEndX = function () {
+          return this.getX() + this.getWidth();
+        };
+      }
+
+      draw() {
+        this.draw_bar();
+        this.draw_progress_bar();
+        if (this.options.enable_labels) {
+          this.draw_label();
+        }
+        this.draw_resize_handles();
+      }
+
+      draw_bar() {
+        this.$bar = createSVG("rect", {
+          x: this.x,
+          y: this.y,
+          width: this.width,
+          height: this.height,
+          rx: this.corner_radius,
+          ry: this.corner_radius,
+          class: "bar",
+          append_to: this.bar_group,
+        });
+
+        animateSVG(this.$bar, "width", 0, this.width);
+
+        if (this.invalid) {
+          this.$bar.classList.add("bar-invalid");
+        }
+      }
+
+      draw_progress_bar() {
+        if (this.invalid) return;
+        this.$bar_progress = createSVG("rect", {
+          x: this.x,
+          y: this.y,
+          width: this.progress_width,
+          height: this.height,
+          rx: this.corner_radius,
+          ry: this.corner_radius,
+          class: "bar-progress",
+          append_to: this.bar_group,
+        });
+
+        animateSVG(this.$bar_progress, "width", 0, this.progress_width);
+      }
+
+      draw_label() {
+        createSVG("text", {
+          x: this.x + this.width / 2,
+          y: this.y + this.height / 2,
+          innerHTML: this.task.name,
+          class: "bar-label",
+          append_to: this.bar_group,
+        });
+        // labels get BBox in the next tick
+        requestAnimationFrame(() => this.update_label_position());
+      }
+
+      draw_resize_handles() {
+        if (this.invalid) return;
+
+        const bar = this.$bar;
+        const handle_width = 8;
+
+        createSVG("rect", {
+          x: bar.getX() + bar.getWidth() - 9,
+          y: bar.getY() + 1,
+          width: handle_width,
+          height: this.height - 2,
+          rx: this.corner_radius,
+          ry: this.corner_radius,
+          class: "handle right",
+          append_to: this.handle_group,
+        });
+
+        createSVG("rect", {
+          x: bar.getX() + 1,
+          y: bar.getY() + 1,
+          width: handle_width,
+          height: this.height - 2,
+          rx: this.corner_radius,
+          ry: this.corner_radius,
+          class: "handle left",
+          append_to: this.handle_group,
+        });
+
+        if (this.task.progress && this.task.progress < 100) {
+          this.$handle_progress = createSVG("polygon", {
+            points: this.get_progress_polygon_points().join(","),
+            class: "handle progress",
+            append_to: this.handle_group,
+          });
+        }
+      }
+
+      get_progress_polygon_points() {
+        const bar_progress = this.$bar_progress;
+        return [
+          bar_progress.getEndX() - 5,
+          bar_progress.getY() + bar_progress.getHeight(),
+          bar_progress.getEndX() + 5,
+          bar_progress.getY() + bar_progress.getHeight(),
+          bar_progress.getEndX(),
+          bar_progress.getY() + bar_progress.getHeight() - 8.66,
+        ];
+      }
+
+      bind() {
+        if (this.invalid) return;
+        this.setup_click_event();
+      }
+
+      setup_click_event() {
+        $.on(this.group, "focus " + this.gantt.options.popup_trigger, (e) => {
+          if (this.action_completed) {
+            // just finished a move action, wait for a few seconds
+            return;
+          }
+
+          this.show_popup();
+          this.gantt.unselect_all();
+          this.group.classList.add("active");
+        });
+
+        $.on(this.group, "dblclick", (e) => {
+          if (this.action_completed) {
+            // just finished a move action, wait for a few seconds
+            return;
+          }
+
+          this.gantt.trigger_event("click", [this.task]);
+        });
+      }
+
+      show_popup() {
+        if (this.gantt.bar_being_dragged) return;
+
+        const start_date = date_utils.format(
+          this.task._start,
+          "MMM D",
+          this.gantt.options.language
+        );
+        const end_date = date_utils.format(
+          date_utils.add(this.task._end, -1, "second"),
+          "MMM D",
+          this.gantt.options.language
+        );
+        const subtitle = start_date + " - " + end_date;
+
+        this.gantt.show_popup({
+          target_element: this.$bar,
+          title: this.task.name,
+          subtitle: subtitle,
+          task: this.task,
+        });
+      }
+
+      update_bar_position({ x = null, width = null }) {
+        const bar = this.$bar;
+        if (x) {
+          // get all x values of parent task
+          const xs = this.task.dependencies.map((dep) => {
+            return this.gantt.get_bar(dep).$bar.getX();
+          });
+          // child task must not go before parent
+          const valid_x = xs.reduce((prev, curr) => {
+            return x >= curr;
+          }, x);
+          if (!valid_x) {
+            width = null;
+            return;
+          }
+          this.update_attr(bar, "x", x);
+        }
+        if (width && width >= 16) { //&& width >= this.gantt.options.column_width) {
+          this.update_attr(bar, "width", width);
+        }
+        this.update_label_position();
+        this.update_handle_position();
+        this.update_progressbar_position();
+        this.update_arrow_position();
+      }
+
+      date_changed() {
+        let changed = false;
+        const { new_start_date, new_end_date } = this.compute_start_end_date();
+
+        if (Number(this.task._start) !== Number(new_start_date)) {
+          changed = true;
+          this.task._start = new_start_date;
         }
 
-        set_defaults(gantt, task) {
-            this.action_completed = false;
-            this.gantt = gantt;
-            this.task = task;
+        if (Number(this.task._end) !== Number(new_end_date)) {
+          changed = true;
+          this.task._end = new_end_date;
         }
 
-        prepare() {
-            this.prepare_values();
-            this.prepare_helpers();
+        if (!changed) return;
+
+        this.gantt.trigger_event("date_change", [
+          this.task,
+          new_start_date,
+          date_utils.add(new_end_date, -1, "second"),
+        ]);
+      }
+
+      progress_changed() {
+        const new_progress = this.compute_progress();
+        this.task.progress = new_progress;
+        this.gantt.trigger_event("progress_change", [this.task, new_progress]);
+      }
+
+      set_action_completed() {
+        this.action_completed = true;
+        setTimeout(() => (this.action_completed = false), 1000);
+      }
+
+      compute_start_end_date() {
+        const bar = this.$bar;
+        const x_in_units = bar.getX() / this.gantt.options.column_width;
+        const new_start_date = date_utils.add(
+          this.gantt.gantt_start,
+          x_in_units * this.gantt.options.step,
+          "hour"
+        );
+        const width_in_units = bar.getWidth() / this.gantt.options.column_width;
+        const new_end_date = date_utils.add(
+          new_start_date,
+          width_in_units * this.gantt.options.step,
+          "hour"
+        );
+
+        return { new_start_date, new_end_date };
+      }
+
+      compute_progress() {
+        const progress =
+          (this.$bar_progress.getWidth() / this.$bar.getWidth()) * 100;
+        return parseInt(progress, 10);
+      }
+
+      compute_x() {
+        const { step, column_width } = this.gantt.options;
+        const task_start = this.task._start;
+        const gantt_start = this.gantt.gantt_start;
+
+        const diff = date_utils.diff(task_start, gantt_start, "hour");
+        let x = (diff / step) * column_width;
+
+        if (this.gantt.view_is("Month")) {
+          const diff = date_utils.diff(task_start, gantt_start, "day");
+          x = (diff * column_width) / 30;
         }
+        return x;
+      }
 
-        prepare_values() {
-            this.invalid = this.task.invalid;
-            this.height = this.gantt.options.bar_height;
-            this.x = this.compute_x();
-            this.y = this.compute_y();
-            this.corner_radius = this.gantt.options.bar_corner_radius;
-            this.duration =
-                date_utils.diff(this.task._end, this.task._start, 'hour') /
-                this.gantt.options.step;
-            this.width = this.gantt.options.column_width * this.duration;
-            this.progress_width =
-                this.gantt.options.column_width *
-                    this.duration *
-                    (this.task.progress / 100) || 0;
-            this.group = createSVG('g', {
-                class: 'bar-wrapper ' + (this.task.custom_class || ''),
-                'data-id': this.task.id,
-            });
-            this.bar_group = createSVG('g', {
-                class: 'bar-group',
-                append_to: this.group,
-            });
-            this.handle_group = createSVG('g', {
-                class: 'handle-group',
-                append_to: this.group,
-            });
+      compute_y() {
+        return (
+          this.gantt.options.header_height +
+          this.gantt.options.padding +
+          this.task._index * (this.height + this.gantt.options.padding)
+        );
+      }
+
+      get_snap_position(dx) {
+        let odx = dx,
+          rem,
+          position;
+
+        if (this.gantt.view_is("Week")) {
+          rem = dx % (this.gantt.options.column_width / 7);
+          position =
+            odx -
+            rem +
+            (rem < this.gantt.options.column_width / 14
+              ? 0
+              : this.gantt.options.column_width / 7);
+        } else if (this.gantt.view_is("Month")) {
+          rem = dx % (this.gantt.options.column_width / 30);
+          position =
+            odx -
+            rem +
+            (rem < this.gantt.options.column_width / 60
+              ? 0
+              : this.gantt.options.column_width / 30);
+        } else {
+          rem = dx % this.gantt.options.column_width;
+          position =
+            odx -
+            rem +
+            (rem < this.gantt.options.column_width / 2
+              ? 0
+              : this.gantt.options.column_width);
         }
+        return position;
+      }
 
-        prepare_helpers() {
-            SVGElement.prototype.getX = function () {
-                return +this.getAttribute('x');
-            };
-            SVGElement.prototype.getY = function () {
-                return +this.getAttribute('y');
-            };
-            SVGElement.prototype.getWidth = function () {
-                return +this.getAttribute('width');
-            };
-            SVGElement.prototype.getHeight = function () {
-                return +this.getAttribute('height');
-            };
-            SVGElement.prototype.getEndX = function () {
-                return this.getX() + this.getWidth();
-            };
+      update_attr(element, attr, value) {
+        value = +value;
+        if (!isNaN(value)) {
+          element.setAttribute(attr, value);
         }
+        return element;
+      }
 
-        draw() {
-            this.draw_bar();
-            this.draw_progress_bar();
-            this.draw_label();
-            this.draw_resize_handles();
+      update_progressbar_position() {
+        if (this.invalid) return;
+        this.$bar_progress.setAttribute("x", this.$bar.getX());
+        this.$bar_progress.setAttribute(
+          "width",
+          this.$bar.getWidth() * ((this.task.progress || 0) / 100)
+        );
+      }
+
+      update_label_position() {
+        if (this.options.enable_labels) {
+          const bar = this.$bar,
+            label = this.group.querySelector(".bar-label");
+
+          if (label.getBBox().width > bar.getWidth()) {
+            label.classList.add("big");
+            label.setAttribute("x", bar.getX() + bar.getWidth() + 5);
+          } else {
+            label.classList.remove("big");
+            label.setAttribute("x", bar.getX() + bar.getWidth() / 2);
+          }
         }
+      }
 
-        draw_bar() {
-            this.$bar = createSVG('rect', {
-                x: this.x,
-                y: this.y,
-                width: this.width,
-                height: this.height,
-                rx: this.corner_radius,
-                ry: this.corner_radius,
-                class: 'bar',
-                append_to: this.bar_group,
-            });
+      update_handle_position() {
+        if (this.invalid) return;
+        const bar = this.$bar;
+        this.handle_group
+          .querySelector(".handle.left")
+          .setAttribute("x", bar.getX() + 1);
+        this.handle_group
+          .querySelector(".handle.right")
+          .setAttribute("x", bar.getEndX() - 9);
+        const handle = this.group.querySelector(".handle.progress");
+        handle && handle.setAttribute("points", this.get_progress_polygon_points());
+      }
 
-            animateSVG(this.$bar, 'width', 0, this.width);
-
-            if (this.invalid) {
-                this.$bar.classList.add('bar-invalid');
-            }
+      update_arrow_position() {
+        this.arrows = this.arrows || [];
+        for (let arrow of this.arrows) {
+          arrow.update();
         }
-
-        draw_progress_bar() {
-            if (this.invalid) return;
-            this.$bar_progress = createSVG('rect', {
-                x: this.x,
-                y: this.y,
-                width: this.progress_width,
-                height: this.height,
-                rx: this.corner_radius,
-                ry: this.corner_radius,
-                class: 'bar-progress',
-                append_to: this.bar_group,
-            });
-
-            animateSVG(this.$bar_progress, 'width', 0, this.progress_width);
-        }
-
-        draw_label() {
-            createSVG('text', {
-                x: this.x + this.width / 2,
-                y: this.y + this.height / 2,
-                innerHTML: this.task.name,
-                class: 'bar-label',
-                append_to: this.bar_group,
-            });
-            // labels get BBox in the next tick
-            requestAnimationFrame(() => this.update_label_position());
-        }
-
-        draw_resize_handles() {
-            if (this.invalid) return;
-
-            const bar = this.$bar;
-            const handle_width = 8;
-
-            createSVG('rect', {
-                x: bar.getX() + bar.getWidth() - 9,
-                y: bar.getY() + 1,
-                width: handle_width,
-                height: this.height - 2,
-                rx: this.corner_radius,
-                ry: this.corner_radius,
-                class: 'handle right',
-                append_to: this.handle_group,
-            });
-
-            createSVG('rect', {
-                x: bar.getX() + 1,
-                y: bar.getY() + 1,
-                width: handle_width,
-                height: this.height - 2,
-                rx: this.corner_radius,
-                ry: this.corner_radius,
-                class: 'handle left',
-                append_to: this.handle_group,
-            });
-
-            if (this.task.progress && this.task.progress < 100) {
-                this.$handle_progress = createSVG('polygon', {
-                    points: this.get_progress_polygon_points().join(','),
-                    class: 'handle progress',
-                    append_to: this.handle_group,
-                });
-            }
-        }
-
-        get_progress_polygon_points() {
-            const bar_progress = this.$bar_progress;
-            return [
-                bar_progress.getEndX() - 5,
-                bar_progress.getY() + bar_progress.getHeight(),
-                bar_progress.getEndX() + 5,
-                bar_progress.getY() + bar_progress.getHeight(),
-                bar_progress.getEndX(),
-                bar_progress.getY() + bar_progress.getHeight() - 8.66,
-            ];
-        }
-
-        bind() {
-            if (this.invalid) return;
-            this.setup_click_event();
-        }
-
-        setup_click_event() {
-            $.on(this.group, 'focus ' + this.gantt.options.popup_trigger, (e) => {
-                if (this.action_completed) {
-                    // just finished a move action, wait for a few seconds
-                    return;
-                }
-
-                this.show_popup();
-                this.gantt.unselect_all();
-                this.group.classList.add('active');
-            });
-
-            $.on(this.group, 'dblclick', (e) => {
-                if (this.action_completed) {
-                    // just finished a move action, wait for a few seconds
-                    return;
-                }
-
-                this.gantt.trigger_event('click', [this.task]);
-            });
-        }
-
-        show_popup() {
-            if (this.gantt.bar_being_dragged) return;
-
-            const start_date = date_utils.format(
-                this.task._start,
-                'MMM D',
-                this.gantt.options.language
-            );
-            const end_date = date_utils.format(
-                date_utils.add(this.task._end, -1, 'second'),
-                'MMM D',
-                this.gantt.options.language
-            );
-            const subtitle = start_date + ' - ' + end_date;
-
-            this.gantt.show_popup({
-                target_element: this.$bar,
-                title: this.task.name,
-                subtitle: subtitle,
-                task: this.task,
-            });
-        }
-
-        update_bar_position({ x = null, width = null }) {
-            const bar = this.$bar;
-            if (x) {
-                // get all x values of parent task
-                const xs = this.task.dependencies.map((dep) => {
-                    return this.gantt.get_bar(dep).$bar.getX();
-                });
-                // child task must not go before parent
-                const valid_x = xs.reduce((prev, curr) => {
-                    return x >= curr;
-                }, x);
-                if (!valid_x) {
-                    width = null;
-                    return;
-                }
-                this.update_attr(bar, 'x', x);
-            }
-            if (width && width >= this.gantt.options.column_width) {
-                this.update_attr(bar, 'width', width);
-            }
-            this.update_label_position();
-            this.update_handle_position();
-            this.update_progressbar_position();
-            this.update_arrow_position();
-        }
-
-        date_changed() {
-            let changed = false;
-            const { new_start_date, new_end_date } = this.compute_start_end_date();
-
-            if (Number(this.task._start) !== Number(new_start_date)) {
-                changed = true;
-                this.task._start = new_start_date;
-            }
-
-            if (Number(this.task._end) !== Number(new_end_date)) {
-                changed = true;
-                this.task._end = new_end_date;
-            }
-
-            if (!changed) return;
-
-            this.gantt.trigger_event('date_change', [
-                this.task,
-                new_start_date,
-                date_utils.add(new_end_date, -1, 'second'),
-            ]);
-        }
-
-        progress_changed() {
-            const new_progress = this.compute_progress();
-            this.task.progress = new_progress;
-            this.gantt.trigger_event('progress_change', [this.task, new_progress]);
-        }
-
-        set_action_completed() {
-            this.action_completed = true;
-            setTimeout(() => (this.action_completed = false), 1000);
-        }
-
-        compute_start_end_date() {
-            const bar = this.$bar;
-            const x_in_units = bar.getX() / this.gantt.options.column_width;
-            const new_start_date = date_utils.add(
-                this.gantt.gantt_start,
-                x_in_units * this.gantt.options.step,
-                'hour'
-            );
-            const width_in_units = bar.getWidth() / this.gantt.options.column_width;
-            const new_end_date = date_utils.add(
-                new_start_date,
-                width_in_units * this.gantt.options.step,
-                'hour'
-            );
-
-            return { new_start_date, new_end_date };
-        }
-
-        compute_progress() {
-            const progress =
-                (this.$bar_progress.getWidth() / this.$bar.getWidth()) * 100;
-            return parseInt(progress, 10);
-        }
-
-        compute_x() {
-            const { step, column_width } = this.gantt.options;
-            const task_start = this.task._start;
-            const gantt_start = this.gantt.gantt_start;
-
-            const diff = date_utils.diff(task_start, gantt_start, 'hour');
-            let x = (diff / step) * column_width;
-
-            if (this.gantt.view_is('Month')) {
-                const diff = date_utils.diff(task_start, gantt_start, 'day');
-                x = (diff * column_width) / 30;
-            }
-            return x;
-        }
-
-        compute_y() {
-            return (
-                this.gantt.options.header_height +
-                this.gantt.options.padding +
-                this.task._index * (this.height + this.gantt.options.padding)
-            );
-        }
-
-        get_snap_position(dx) {
-            let odx = dx,
-                rem,
-                position;
-
-            if (this.gantt.view_is('Week')) {
-                rem = dx % (this.gantt.options.column_width / 7);
-                position =
-                    odx -
-                    rem +
-                    (rem < this.gantt.options.column_width / 14
-                        ? 0
-                        : this.gantt.options.column_width / 7);
-            } else if (this.gantt.view_is('Month')) {
-                rem = dx % (this.gantt.options.column_width / 30);
-                position =
-                    odx -
-                    rem +
-                    (rem < this.gantt.options.column_width / 60
-                        ? 0
-                        : this.gantt.options.column_width / 30);
-            } else {
-                rem = dx % this.gantt.options.column_width;
-                position =
-                    odx -
-                    rem +
-                    (rem < this.gantt.options.column_width / 2
-                        ? 0
-                        : this.gantt.options.column_width);
-            }
-            return position;
-        }
-
-        update_attr(element, attr, value) {
-            value = +value;
-            if (!isNaN(value)) {
-                element.setAttribute(attr, value);
-            }
-            return element;
-        }
-
-        update_progressbar_position() {
-            if (this.invalid) return;
-            this.$bar_progress.setAttribute('x', this.$bar.getX());
-            this.$bar_progress.setAttribute(
-                'width',
-                this.$bar.getWidth() * (this.task.progress / 100)
-            );
-        }
-
-        update_label_position() {
-            const bar = this.$bar,
-                label = this.group.querySelector('.bar-label');
-
-            if (label.getBBox().width > bar.getWidth()) {
-                label.classList.add('big');
-                label.setAttribute('x', bar.getX() + bar.getWidth() + 5);
-            } else {
-                label.classList.remove('big');
-                label.setAttribute('x', bar.getX() + bar.getWidth() / 2);
-            }
-        }
-
-        update_handle_position() {
-            if (this.invalid) return;
-            const bar = this.$bar;
-            this.handle_group
-                .querySelector('.handle.left')
-                .setAttribute('x', bar.getX() + 1);
-            this.handle_group
-                .querySelector('.handle.right')
-                .setAttribute('x', bar.getEndX() - 9);
-            const handle = this.group.querySelector('.handle.progress');
-            handle &&
-                handle.setAttribute('points', this.get_progress_polygon_points());
-        }
-
-        update_arrow_position() {
-            this.arrows = this.arrows || [];
-            for (let arrow of this.arrows) {
-                arrow.update();
-            }
-        }
-    }
-
-    class Arrow {
-        constructor(gantt, from_task, to_task) {
-            this.gantt = gantt;
-            this.from_task = from_task;
-            this.to_task = to_task;
-
-            this.calculate_path();
-            this.draw();
-        }
-
-        calculate_path() {
-            let start_x =
-                this.from_task.$bar.getX() + this.from_task.$bar.getWidth() / 2;
-
-            const condition = () =>
-                this.to_task.$bar.getX() < start_x + this.gantt.options.padding &&
-                start_x > this.from_task.$bar.getX() + this.gantt.options.padding;
-
-            while (condition()) {
-                start_x -= 10;
-            }
-
-            const start_y =
-                this.gantt.options.header_height +
-                this.gantt.options.bar_height +
-                (this.gantt.options.padding + this.gantt.options.bar_height) *
-                    this.from_task.task._index +
-                this.gantt.options.padding;
-
-            const end_x = this.to_task.$bar.getX() - this.gantt.options.padding / 2;
-            const end_y =
-                this.gantt.options.header_height +
-                this.gantt.options.bar_height / 2 +
-                (this.gantt.options.padding + this.gantt.options.bar_height) *
-                    this.to_task.task._index +
-                this.gantt.options.padding;
-
-            const from_is_below_to =
-                this.from_task.task._index > this.to_task.task._index;
-            const curve = this.gantt.options.arrow_curve;
-            const clockwise = from_is_below_to ? 1 : 0;
-            const curve_y = from_is_below_to ? -curve : curve;
-            const offset = from_is_below_to
-                ? end_y + this.gantt.options.arrow_curve
-                : end_y - this.gantt.options.arrow_curve;
-
-            this.path = `
-            M ${start_x} ${start_y}
-            V ${offset}
-            a ${curve} ${curve} 0 0 ${clockwise} ${curve} ${curve_y}
-            L ${end_x} ${end_y}
-            m -5 -5
-            l 5 5
-            l -5 5`;
-
-            if (
-                this.to_task.$bar.getX() <
-                this.from_task.$bar.getX() + this.gantt.options.padding
-            ) {
-                const down_1 = this.gantt.options.padding / 2 - curve;
-                const down_2 =
-                    this.to_task.$bar.getY() +
-                    this.to_task.$bar.getHeight() / 2 -
-                    curve_y;
-                const left = this.to_task.$bar.getX() - this.gantt.options.padding;
-
-                this.path = `
-                M ${start_x} ${start_y}
-                v ${down_1}
-                a ${curve} ${curve} 0 0 1 -${curve} ${curve}
-                H ${left}
-                a ${curve} ${curve} 0 0 ${clockwise} -${curve} ${curve_y}
-                V ${down_2}
-                a ${curve} ${curve} 0 0 ${clockwise} ${curve} ${curve_y}
-                L ${end_x} ${end_y}
-                m -5 -5
-                l 5 5
-                l -5 5`;
-            }
-        }
-
-        draw() {
-            this.element = createSVG('path', {
-                d: this.path,
-                'data-from': this.from_task.task.id,
-                'data-to': this.to_task.task.id,
-            });
-        }
-
-        update() {
-            this.calculate_path();
-            this.element.setAttribute('d', this.path);
-        }
+      }
     }
 
     class Popup {
@@ -943,927 +947,966 @@ var Gantt = (function () {
     }
 
     const VIEW_MODE = {
-        QUARTER_DAY: 'Quarter Day',
-        HALF_DAY: 'Half Day',
-        DAY: 'Day',
-        WEEK: 'Week',
-        MONTH: 'Month',
-        YEAR: 'Year',
+      QUARTER_DAY: "Quarter Day",
+      HALF_DAY: "Half Day",
+      DAY: "Day",
+      WEEK: "Week",
+      MONTH: "Month",
+      YEAR: "Year",
     };
 
     class Gantt {
-        constructor(wrapper, tasks, options) {
-            this.setup_wrapper(wrapper);
-            this.setup_options(options);
-            this.setup_tasks(tasks);
-            // initialize with default view mode
-            this.change_view_mode();
-            this.bind_events();
+      constructor(wrapper, tasks, options) {
+        this.setup_options(options);
+        this.setup_wrapper(wrapper);
+        this.setup_categories(tasks);    
+        this.setup_tasks(tasks);
+        // initialize with default view mode
+        this.change_view_mode();
+        this.bind_events();
+      }
+
+      setup_wrapper(element) {
+        let svg_element, wrapper_element;
+
+        // CSS Selector is passed
+        if (typeof element === "string") {
+          element = document.querySelector(element);
         }
 
-        setup_wrapper(element) {
-            let svg_element, wrapper_element;
-
-            // CSS Selector is passed
-            if (typeof element === 'string') {
-                element = document.querySelector(element);
-            }
-
-            // get the SVGElement
-            if (element instanceof HTMLElement) {
-                wrapper_element = element;
-                svg_element = element.querySelector('svg');
-            } else if (element instanceof SVGElement) {
-                svg_element = element;
-            } else {
-                throw new TypeError(
-                    'Frappé Gantt only supports usage of a string CSS selector,' +
-                        " HTML DOM element or SVG DOM element for the 'element' parameter"
-                );
-            }
-
-            // svg element
-            if (!svg_element) {
-                // create it
-                this.$svg = createSVG('svg', {
-                    append_to: wrapper_element,
-                    class: 'gantt',
-                });
-            } else {
-                this.$svg = svg_element;
-                this.$svg.classList.add('gantt');
-            }
-
-            // wrapper element
-            this.$container = document.createElement('div');
-            this.$container.classList.add('gantt-container');
-
-            const parent_element = this.$svg.parentElement;
-            parent_element.appendChild(this.$container);
-            this.$container.appendChild(this.$svg);
-
-            // popup wrapper
-            this.popup_wrapper = document.createElement('div');
-            this.popup_wrapper.classList.add('popup-wrapper');
-            this.$container.appendChild(this.popup_wrapper);
+        // get the SVGElement
+        if (element instanceof HTMLElement) {
+          wrapper_element = element;
+          svg_element = element.querySelector("svg");
+        } else if (element instanceof SVGElement) {
+          svg_element = element;
+        } else {
+          throw new TypeError(
+            "Frappé Gantt only supports usage of a string CSS selector," +
+              " HTML DOM element or SVG DOM element for the 'element' parameter"
+          );
         }
 
-        setup_options(options) {
-            const default_options = {
-                header_height: 50,
-                column_width: 30,
-                step: 24,
-                view_modes: [...Object.values(VIEW_MODE)],
-                bar_height: 20,
-                bar_corner_radius: 3,
-                arrow_curve: 5,
-                padding: 18,
-                view_mode: 'Day',
-                date_format: 'YYYY-MM-DD',
-                popup_trigger: 'click',
-                custom_popup_html: null,
-                language: 'en',
-            };
-            this.options = Object.assign({}, default_options, options);
+        // svg element
+        if (!svg_element) {
+          // create it
+          this.$svg = createSVG("svg", {
+            append_to: wrapper_element,
+            class: "gantt",
+          });
+        } else {
+          this.$svg = svg_element;
+          this.$svg.classList.add("gantt");
         }
 
-        setup_tasks(tasks) {
-            // prepare tasks
-            this.tasks = tasks.map((task, i) => {
-                // convert to Date objects
-                task._start = date_utils.parse(task.start);
-                task._end = date_utils.parse(task.end);
+        this.$categoriesContainer = document.createElement("div");
+        this.$categoriesContainer.classList.add("gantt-categories-container");
 
-                // make task invalid if duration too large
-                if (date_utils.diff(task._end, task._start, 'year') > 10) {
-                    task.end = null;
-                }
+        const $containerWrapper = document.createElement("div");
+        $containerWrapper.classList.add("gantt-container-wrapper");
 
-                // cache index
-                task._index = i;
+        // wrapper element
+        this.$container = document.createElement("div");
+        this.$container.classList.add("gantt-container");
+        $containerWrapper.appendChild(this.$container);
 
-                // invalid dates
-                if (!task.start && !task.end) {
-                    const today = date_utils.today();
-                    task._start = today;
-                    task._end = date_utils.add(today, 2, 'day');
-                }
+        const parent_element = this.$svg.parentElement;
+        parent_element.classList.add("gantt-main-container");
 
-                if (!task.start && task.end) {
-                    task._start = date_utils.add(task._end, -2, 'day');
-                }
+        parent_element.appendChild(this.$categoriesContainer);
+        parent_element.appendChild($containerWrapper);
 
-                if (task.start && !task.end) {
-                    task._end = date_utils.add(task._start, 2, 'day');
-                }
+        this.$container.appendChild(this.$svg);
 
-                // if hours is not set, assume the last day is full day
-                // e.g: 2018-09-09 becomes 2018-09-09 23:59:59
-                const task_end_values = date_utils.get_date_values(task._end);
-                if (task_end_values.slice(3).every((d) => d === 0)) {
-                    task._end = date_utils.add(task._end, 24, 'hour');
-                }
+        // popup wrapper
+        this.popup_wrapper = document.createElement("div");
+        this.popup_wrapper.classList.add("popup-wrapper");
+        if (this.options.popup_class) {
+          this.popup_wrapper.classList.add(this.options.popup_class);
+        }
+        this.$container.appendChild(this.popup_wrapper);
+      }
 
-                // invalid flag
-                if (!task.start || !task.end) {
-                    task.invalid = true;
-                }
+      setup_options(options) {
+        const default_options = {
+          header_height: 50,
+          column_width: 30,
+          step: 24,
+          view_modes: [...Object.values(VIEW_MODE)],
+          bar_height: 20,
+          bar_corner_radius: 3,
+          arrow_curve: 5,
+          padding: 18,
+          view_mode: "Day",
+          date_format: "YYYY-MM-DD",
+          popup_trigger: "click",
+          custom_popup_html: null,
+          language: "en",
+          enable_labels: true,
+          category_class: null,
+          popup_class: null,
+        };
+        this.options = Object.assign({}, default_options, options);
+      }
 
-                // dependencies
-                if (typeof task.dependencies === 'string' || !task.dependencies) {
-                    let deps = [];
-                    if (task.dependencies) {
-                        deps = task.dependencies
-                            .split(',')
-                            .map((d) => d.trim())
-                            .filter((d) => d);
-                    }
-                    task.dependencies = deps;
-                }
-
-                // uids
-                if (!task.id) {
-                    task.id = generate_id(task);
-                }
-
-                return task;
+      setup_tasks(tasks) {
+        this.tasks = [];
+        // prepare tasks
+        tasks.forEach((rawTask, i) => {
+          if (rawTask.items?.length) {
+            rawTask.items.forEach((item) => {
+              const task = this.setup_task(item, i);
+              //task._secondary = j > 0;
+              this.tasks.push(task);
             });
+          }
+        });
 
-            this.setup_dependencies();
+        this.setup_dependencies();
+      }
+
+      setup_task(task, index) {
+        // convert to Date objects
+        task._start = date_utils.parse(task.start);
+        task._end = date_utils.parse(task.end);
+
+        // make task invalid if duration too large
+        if (date_utils.diff(task._end, task._start, "year") > 10) {
+          task.end = null;
         }
 
-        setup_dependencies() {
-            this.dependency_map = {};
-            for (let t of this.tasks) {
-                for (let d of t.dependencies) {
-                    this.dependency_map[d] = this.dependency_map[d] || [];
-                    this.dependency_map[d].push(t.id);
-                }
-            }
+        // cache index
+        task._index = index;
+
+        // invalid dates
+        if (!task.start && !task.end) {
+          const today = date_utils.today();
+          task._start = today;
+          task._end = date_utils.add(today, 2, "day");
         }
 
-        refresh(tasks) {
-            this.setup_tasks(tasks);
-            this.change_view_mode();
+        if (!task.start && task.end) {
+          task._start = date_utils.add(task._end, -2, "day");
         }
 
-        change_view_mode(mode = this.options.view_mode) {
-            this.update_view_scale(mode);
-            this.setup_dates();
-            this.render();
-            // fire viewmode_change event
-            this.trigger_event('view_change', [mode]);
+        if (task.start && !task.end) {
+          task._end = date_utils.add(task._start, 2, "day");
         }
 
-        update_view_scale(view_mode) {
-            this.options.view_mode = view_mode;
-
-            if (view_mode === VIEW_MODE.DAY) {
-                this.options.step = 24;
-                this.options.column_width = 38;
-            } else if (view_mode === VIEW_MODE.HALF_DAY) {
-                this.options.step = 24 / 2;
-                this.options.column_width = 38;
-            } else if (view_mode === VIEW_MODE.QUARTER_DAY) {
-                this.options.step = 24 / 4;
-                this.options.column_width = 38;
-            } else if (view_mode === VIEW_MODE.WEEK) {
-                this.options.step = 24 * 7;
-                this.options.column_width = 140;
-            } else if (view_mode === VIEW_MODE.MONTH) {
-                this.options.step = 24 * 30;
-                this.options.column_width = 120;
-            } else if (view_mode === VIEW_MODE.YEAR) {
-                this.options.step = 24 * 365;
-                this.options.column_width = 120;
-            }
+        // if hours is not set, assume the last day is full day
+        // e.g: 2018-09-09 becomes 2018-09-09 23:59:59
+        const task_end_values = date_utils.get_date_values(task._end);
+        if (task_end_values.slice(3).every((d) => d === 0)) {
+          task._end = date_utils.add(task._end, 24, "hour");
         }
 
-        setup_dates() {
-            this.setup_gantt_dates();
-            this.setup_date_values();
+        // invalid flag
+        if (!task.start || !task.end) {
+          task.invalid = true;
         }
 
-        setup_gantt_dates() {
-            this.gantt_start = this.gantt_end = null;
+        // dependencies
+        if (typeof task.dependencies === "string" || !task.dependencies) {
+          let deps = [];
+          if (task.dependencies) {
+            deps = task.dependencies
+              .split(",")
+              .map((d) => d.trim())
+              .filter((d) => d);
+          }
+          task.dependencies = deps;
+        }
 
-            for (let task of this.tasks) {
-                // set global start and end date
-                if (!this.gantt_start || task._start < this.gantt_start) {
-                    this.gantt_start = task._start;
-                }
-                if (!this.gantt_end || task._end > this.gantt_end) {
-                    this.gantt_end = task._end;
-                }
-            }
+        // uids
+        if (!task.id) {
+          task.id = generate_id(task);
+        }
 
-            this.gantt_start = date_utils.start_of(this.gantt_start, 'day');
-            this.gantt_end = date_utils.start_of(this.gantt_end, 'day');
+        return task;
+      }
 
-            // add date padding on both sides
-            if (this.view_is([VIEW_MODE.QUARTER_DAY, VIEW_MODE.HALF_DAY])) {
-                this.gantt_start = date_utils.add(this.gantt_start, -7, 'day');
-                this.gantt_end = date_utils.add(this.gantt_end, 7, 'day');
+      setup_categories(tasks) {
+        this.categories = tasks.map((t) => t.name);
+      }
+
+      setup_dependencies() {
+        this.dependency_map = {};
+        for (let t of this.tasks) {
+          for (let d of t.dependencies) {
+            this.dependency_map[d] = this.dependency_map[d] || [];
+            this.dependency_map[d].push(t.id);
+          }
+        }
+      }
+
+      refresh(tasks) {
+        this.setup_tasks(tasks);
+        this.change_view_mode();
+      }
+
+      change_view_mode(mode = this.options.view_mode) {
+        this.update_view_scale(mode);
+        this.setup_dates();
+        this.render();
+        // fire viewmode_change event
+        this.trigger_event("view_change", [mode]);
+      }
+
+      update_view_scale(view_mode) {
+        this.options.view_mode = view_mode;
+
+        if (view_mode === VIEW_MODE.DAY) {
+          this.options.step = 24;
+          this.options.column_width = 38;
+        } else if (view_mode === VIEW_MODE.HALF_DAY) {
+          this.options.step = 24 / 2;
+          this.options.column_width = 38;
+        } else if (view_mode === VIEW_MODE.QUARTER_DAY) {
+          this.options.step = 24 / 4;
+          this.options.column_width = 38;
+        } else if (view_mode === VIEW_MODE.WEEK) {
+          this.options.step = 24 * 7;
+          this.options.column_width = 140;
+        } else if (view_mode === VIEW_MODE.MONTH) {
+          this.options.step = 24 * 30;
+          this.options.column_width = 120;
+        } else if (view_mode === VIEW_MODE.YEAR) {
+          this.options.step = 24 * 365;
+          this.options.column_width = 120;
+        }
+      }
+
+      setup_dates() {
+        this.setup_gantt_dates();
+        this.setup_date_values();
+      }
+
+      setup_gantt_dates() {
+        this.gantt_start = this.gantt_end = null;
+
+        for (let task of this.tasks) {
+          // set global start and end date
+          if (!this.gantt_start || task._start < this.gantt_start) {
+            this.gantt_start = task._start;
+          }
+          if (!this.gantt_end || task._end > this.gantt_end) {
+            this.gantt_end = task._end;
+          }
+        }
+
+        this.gantt_start = date_utils.start_of(this.gantt_start, "day");
+        this.gantt_end = date_utils.start_of(this.gantt_end, "day");
+
+        // add date padding on both sides
+        if (this.view_is([VIEW_MODE.QUARTER_DAY, VIEW_MODE.HALF_DAY])) {
+          this.gantt_start = date_utils.add(this.gantt_start, -7, "day");
+          this.gantt_end = date_utils.add(this.gantt_end, 7, "day");
+        } else if (this.view_is(VIEW_MODE.MONTH)) {
+          this.gantt_start = date_utils.start_of(this.gantt_start, "year");
+          this.gantt_end = date_utils.add(this.gantt_end, 1, "year");
+        } else if (this.view_is(VIEW_MODE.YEAR)) {
+          this.gantt_start = date_utils.add(this.gantt_start, -2, "year");
+          this.gantt_end = date_utils.add(this.gantt_end, 2, "year");
+        } else {
+          this.gantt_start = date_utils.add(this.gantt_start, -1, "month");
+          this.gantt_end = date_utils.add(this.gantt_end, 1, "month");
+        }
+      }
+
+      setup_date_values() {
+        this.dates = [];
+        let cur_date = null;
+
+        while (cur_date === null || cur_date < this.gantt_end) {
+          if (!cur_date) {
+            cur_date = date_utils.clone(this.gantt_start);
+          } else {
+            if (this.view_is(VIEW_MODE.YEAR)) {
+              cur_date = date_utils.add(cur_date, 1, "year");
             } else if (this.view_is(VIEW_MODE.MONTH)) {
-                this.gantt_start = date_utils.start_of(this.gantt_start, 'year');
-                this.gantt_end = date_utils.add(this.gantt_end, 1, 'year');
-            } else if (this.view_is(VIEW_MODE.YEAR)) {
-                this.gantt_start = date_utils.add(this.gantt_start, -2, 'year');
-                this.gantt_end = date_utils.add(this.gantt_end, 2, 'year');
+              cur_date = date_utils.add(cur_date, 1, "month");
             } else {
-                this.gantt_start = date_utils.add(this.gantt_start, -1, 'month');
-                this.gantt_end = date_utils.add(this.gantt_end, 1, 'month');
+              cur_date = date_utils.add(cur_date, this.options.step, "hour");
             }
+          }
+          this.dates.push(cur_date);
         }
+      }
 
-        setup_date_values() {
-            this.dates = [];
-            let cur_date = null;
+      bind_events() {
+        this.bind_grid_click();
+        this.bind_bar_events();
+      }
 
-            while (cur_date === null || cur_date < this.gantt_end) {
-                if (!cur_date) {
-                    cur_date = date_utils.clone(this.gantt_start);
-                } else {
-                    if (this.view_is(VIEW_MODE.YEAR)) {
-                        cur_date = date_utils.add(cur_date, 1, 'year');
-                    } else if (this.view_is(VIEW_MODE.MONTH)) {
-                        cur_date = date_utils.add(cur_date, 1, 'month');
-                    } else {
-                        cur_date = date_utils.add(
-                            cur_date,
-                            this.options.step,
-                            'hour'
-                        );
-                    }
-                }
-                this.dates.push(cur_date);
-            }
+      render() {
+        this.clear();
+        this.setup_layers();
+        this.make_categories();
+        this.make_grid();
+        this.make_dates();
+        this.make_bars();
+        this.make_arrows();
+        this.map_arrows_on_bars();
+        this.set_width();
+        this.set_scroll_position();
+      }
+
+      setup_layers() {
+        this.layers = {};
+        const layers = ["grid", "date", "arrow", "progress", "bar", "details"];
+        // make group layers
+        for (let layer of layers) {
+          this.layers[layer] = createSVG("g", {
+            class: layer,
+            append_to: this.$svg,
+          });
         }
+      }
 
-        bind_events() {
-            this.bind_grid_click();
-            this.bind_bar_events();
+      make_grid() {
+        this.make_grid_background();
+        this.make_grid_rows();
+        this.make_grid_header();
+        this.make_grid_ticks();
+        this.make_grid_highlights();
+      }
+
+      make_grid_background() {
+        const grid_width = this.dates.length * this.options.column_width;
+        const grid_height =
+          this.options.header_height +
+          this.options.padding +
+          (this.options.bar_height + this.options.padding) * this.tasks.length;
+
+        createSVG("rect", {
+          x: 0,
+          y: 0,
+          width: grid_width,
+          height: grid_height,
+          class: "grid-background",
+          append_to: this.layers.grid,
+        });
+
+        $.attr(this.$svg, {
+          height: grid_height + this.options.padding + 100,
+          width: "100%",
+        });
+      }
+
+      make_grid_rows() {
+        const rows_layer = createSVG("g", { append_to: this.layers.grid });
+        const lines_layer = createSVG("g", { append_to: this.layers.grid });
+
+        const row_width = this.dates.length * this.options.column_width;
+        const row_height = this.options.bar_height + this.options.padding;
+
+        let row_y = this.options.header_height + this.options.padding / 2;
+
+        for (let task of this.categories) {
+          createSVG("rect", {
+            x: 0,
+            y: row_y,
+            width: row_width,
+            height: row_height,
+            class: "grid-row",
+            append_to: rows_layer,
+          });
+
+          createSVG("line", {
+            x1: 0,
+            y1: row_y + row_height,
+            x2: row_width,
+            y2: row_y + row_height,
+            class: "row-line",
+            append_to: lines_layer,
+          });
+
+          row_y += this.options.bar_height + this.options.padding;
         }
+      }
 
-        render() {
-            this.clear();
-            this.setup_layers();
-            this.make_grid();
-            this.make_dates();
-            this.make_bars();
-            this.make_arrows();
-            this.map_arrows_on_bars();
-            this.set_width();
-            this.set_scroll_position();
+      make_grid_header() {
+        const header_width = this.dates.length * this.options.column_width;
+        const header_height = this.options.header_height + 10;
+        createSVG("rect", {
+          x: 0,
+          y: 0,
+          width: header_width,
+          height: header_height,
+          class: "grid-header",
+          append_to: this.layers.grid,
+        });
+      }
+
+      make_grid_ticks() {
+        let tick_x = 0;
+        let tick_y = this.options.header_height + this.options.padding / 2;
+        let tick_height =
+          (this.options.bar_height + this.options.padding) * this.tasks.length;
+
+        for (let date of this.dates) {
+          let tick_class = "tick";
+          // thick tick for monday
+          if (this.view_is(VIEW_MODE.DAY) && date.getDate() === 1) {
+            tick_class += " thick";
+          }
+          // thick tick for first week
+          if (
+            this.view_is(VIEW_MODE.WEEK) &&
+            date.getDate() >= 1 &&
+            date.getDate() < 8
+          ) {
+            tick_class += " thick";
+          }
+          // thick ticks for quarters
+          if (this.view_is(VIEW_MODE.MONTH) && date.getMonth() % 3 === 0) {
+            tick_class += " thick";
+          }
+
+          createSVG("path", {
+            d: `M ${tick_x} ${tick_y} v ${tick_height}`,
+            class: tick_class,
+            append_to: this.layers.grid,
+          });
+
+          if (this.view_is(VIEW_MODE.MONTH)) {
+            tick_x +=
+              (date_utils.get_days_in_month(date) * this.options.column_width) / 30;
+          } else {
+            tick_x += this.options.column_width;
+          }
         }
+      }
 
-        setup_layers() {
-            this.layers = {};
-            const layers = ['grid', 'date', 'arrow', 'progress', 'bar', 'details'];
-            // make group layers
-            for (let layer of layers) {
-                this.layers[layer] = createSVG('g', {
-                    class: layer,
-                    append_to: this.$svg,
-                });
-            }
+      make_grid_highlights() {
+        // highlight today's date
+        if (this.view_is(VIEW_MODE.DAY)) {
+          const x =
+            (date_utils.diff(date_utils.today(), this.gantt_start, "hour") /
+              this.options.step) *
+            this.options.column_width;
+          const y = 0;
+
+          const width = this.options.column_width;
+          const height =
+            (this.options.bar_height + this.options.padding) * this.tasks.length +
+            this.options.header_height +
+            this.options.padding / 2;
+
+          createSVG("rect", {
+            x,
+            y,
+            width,
+            height,
+            class: "today-highlight",
+            append_to: this.layers.grid,
+          });
         }
+      }
 
-        make_grid() {
-            this.make_grid_background();
-            this.make_grid_rows();
-            this.make_grid_header();
-            this.make_grid_ticks();
-            this.make_grid_highlights();
-        }
+      make_dates() {
+        for (let date of this.get_dates_to_draw()) {
+          createSVG("text", {
+            x: date.lower_x,
+            y: date.lower_y,
+            innerHTML: date.lower_text,
+            class: "lower-text",
+            append_to: this.layers.date,
+          });
 
-        make_grid_background() {
-            const grid_width = this.dates.length * this.options.column_width;
-            const grid_height =
-                this.options.header_height +
-                this.options.padding +
-                (this.options.bar_height + this.options.padding) *
-                    this.tasks.length;
-
-            createSVG('rect', {
-                x: 0,
-                y: 0,
-                width: grid_width,
-                height: grid_height,
-                class: 'grid-background',
-                append_to: this.layers.grid,
+          if (date.upper_text) {
+            const $upper_text = createSVG("text", {
+              x: date.upper_x,
+              y: date.upper_y,
+              innerHTML: date.upper_text,
+              class: "upper-text",
+              append_to: this.layers.date,
             });
 
-            $.attr(this.$svg, {
-                height: grid_height + this.options.padding + 100,
-                width: '100%',
-            });
-        }
-
-        make_grid_rows() {
-            const rows_layer = createSVG('g', { append_to: this.layers.grid });
-            const lines_layer = createSVG('g', { append_to: this.layers.grid });
-
-            const row_width = this.dates.length * this.options.column_width;
-            const row_height = this.options.bar_height + this.options.padding;
-
-            let row_y = this.options.header_height + this.options.padding / 2;
-
-            for (let task of this.tasks) {
-                createSVG('rect', {
-                    x: 0,
-                    y: row_y,
-                    width: row_width,
-                    height: row_height,
-                    class: 'grid-row',
-                    append_to: rows_layer,
-                });
-
-                createSVG('line', {
-                    x1: 0,
-                    y1: row_y + row_height,
-                    x2: row_width,
-                    y2: row_y + row_height,
-                    class: 'row-line',
-                    append_to: lines_layer,
-                });
-
-                row_y += this.options.bar_height + this.options.padding;
+            // remove out-of-bound dates
+            if ($upper_text.getBBox().x2 > this.layers.grid.getBBox().width) {
+              $upper_text.remove();
             }
+          }
         }
+      }
 
-        make_grid_header() {
-            const header_width = this.dates.length * this.options.column_width;
-            const header_height = this.options.header_height + 10;
-            createSVG('rect', {
-                x: 0,
-                y: 0,
-                width: header_width,
-                height: header_height,
-                class: 'grid-header',
-                append_to: this.layers.grid,
-            });
+      get_dates_to_draw() {
+        let last_date = null;
+        const dates = this.dates.map((date, i) => {
+          const d = this.get_date_info(date, last_date, i);
+          last_date = date;
+          return d;
+        });
+        return dates;
+      }
+
+      get_date_info(date, last_date, i) {
+        if (!last_date) {
+          last_date = date_utils.add(date, 1, "year");
         }
+        const date_text = {
+          "Quarter Day_lower": date_utils.format(date, "HH", this.options.language),
+          "Half Day_lower": date_utils.format(date, "HH", this.options.language),
+          Day_lower:
+            date.getDate() !== last_date.getDate()
+              ? date_utils.format(date, "D", this.options.language)
+              : "",
+          Week_lower:
+            date.getMonth() !== last_date.getMonth()
+              ? date_utils.format(date, "D MMM", this.options.language)
+              : date_utils.format(date, "D", this.options.language),
+          Month_lower: date_utils.format(date, "MMMM", this.options.language),
+          Year_lower: date_utils.format(date, "YYYY", this.options.language),
+          "Quarter Day_upper":
+            date.getDate() !== last_date.getDate()
+              ? date_utils.format(date, "D MMM", this.options.language)
+              : "",
+          "Half Day_upper":
+            date.getDate() !== last_date.getDate()
+              ? date.getMonth() !== last_date.getMonth()
+                ? date_utils.format(date, "D MMM", this.options.language)
+                : date_utils.format(date, "D", this.options.language)
+              : "",
+          Day_upper:
+            date.getMonth() !== last_date.getMonth()
+              ? date_utils.format(date, "MMMM", this.options.language)
+              : "",
+          Week_upper:
+            date.getMonth() !== last_date.getMonth()
+              ? date_utils.format(date, "MMMM", this.options.language)
+              : "",
+          Month_upper:
+            date.getFullYear() !== last_date.getFullYear()
+              ? date_utils.format(date, "YYYY", this.options.language)
+              : "",
+          Year_upper:
+            date.getFullYear() !== last_date.getFullYear()
+              ? date_utils.format(date, "YYYY", this.options.language)
+              : "",
+        };
 
-        make_grid_ticks() {
-            let tick_x = 0;
-            let tick_y = this.options.header_height + this.options.padding / 2;
-            let tick_height =
-                (this.options.bar_height + this.options.padding) *
-                this.tasks.length;
+        const base_pos = {
+          x: i * this.options.column_width,
+          lower_y: this.options.header_height,
+          upper_y: this.options.header_height - 25,
+        };
 
-            for (let date of this.dates) {
-                let tick_class = 'tick';
-                // thick tick for monday
-                if (this.view_is(VIEW_MODE.DAY) && date.getDate() === 1) {
-                    tick_class += ' thick';
-                }
-                // thick tick for first week
-                if (
-                    this.view_is(VIEW_MODE.WEEK) &&
-                    date.getDate() >= 1 &&
-                    date.getDate() < 8
-                ) {
-                    tick_class += ' thick';
-                }
-                // thick ticks for quarters
-                if (this.view_is(VIEW_MODE.MONTH) && date.getMonth() % 3 === 0) {
-                    tick_class += ' thick';
-                }
+        const x_pos = {
+          "Quarter Day_lower": (this.options.column_width * 4) / 2,
+          "Quarter Day_upper": 0,
+          "Half Day_lower": (this.options.column_width * 2) / 2,
+          "Half Day_upper": 0,
+          Day_lower: this.options.column_width / 2,
+          Day_upper: (this.options.column_width * 30) / 2,
+          Week_lower: 0,
+          Week_upper: (this.options.column_width * 4) / 2,
+          Month_lower: this.options.column_width / 2,
+          Month_upper: (this.options.column_width * 12) / 2,
+          Year_lower: this.options.column_width / 2,
+          Year_upper: (this.options.column_width * 30) / 2,
+        };
 
-                createSVG('path', {
-                    d: `M ${tick_x} ${tick_y} v ${tick_height}`,
-                    class: tick_class,
-                    append_to: this.layers.grid,
-                });
+        return {
+          upper_text: date_text[`${this.options.view_mode}_upper`],
+          lower_text: date_text[`${this.options.view_mode}_lower`],
+          upper_x: base_pos.x + x_pos[`${this.options.view_mode}_upper`],
+          upper_y: base_pos.upper_y,
+          lower_x: base_pos.x + x_pos[`${this.options.view_mode}_lower`],
+          lower_y: base_pos.lower_y,
+        };
+      }
 
-                if (this.view_is(VIEW_MODE.MONTH)) {
-                    tick_x +=
-                        (date_utils.get_days_in_month(date) *
-                            this.options.column_width) /
-                        30;
-                } else {
-                    tick_x += this.options.column_width;
-                }
-            }
+      make_bars() {
+        this.bars = [];
+        this.tasks.forEach((task) => {
+          const bar = new Bar(this, task, this.options);
+          this.layers.bar.appendChild(bar.group);
+          this.bars.push(bar);
+        });
+      }
+
+      make_categories() {
+        this.categories.forEach((category) => {
+          const $categoryEl = this.createDiv(
+            this.$categoriesContainer,
+            "gantt-category",
+            "gantt-category-item",
+            this.options.category_class
+          );
+
+          this.createDiv($categoryEl, "gantt-category-label").innerText = category;
+        });
+      }
+
+      make_arrows() {
+        this.arrows = [];
+        for (let task of this.tasks) {
+          let arrows = [];
+          arrows = task.dependencies
+            .map((task_id) => {
+              const dependency = this.get_task(task_id);
+              if (!dependency) return;
+              const arrow = new Arrow(
+                this,
+                this.bars[dependency._index], // from_task
+                this.bars[task._index] // to_task
+              );
+              this.layers.arrow.appendChild(arrow.element);
+              return arrow;
+            })
+            .filter(Boolean); // filter falsy values
+          this.arrows = this.arrows.concat(arrows);
         }
+      }
 
-        make_grid_highlights() {
-            // highlight today's date
-            if (this.view_is(VIEW_MODE.DAY)) {
-                const x =
-                    (date_utils.diff(date_utils.today(), this.gantt_start, 'hour') /
-                        this.options.step) *
-                    this.options.column_width;
-                const y = 0;
-
-                const width = this.options.column_width;
-                const height =
-                    (this.options.bar_height + this.options.padding) *
-                        this.tasks.length +
-                    this.options.header_height +
-                    this.options.padding / 2;
-
-                createSVG('rect', {
-                    x,
-                    y,
-                    width,
-                    height,
-                    class: 'today-highlight',
-                    append_to: this.layers.grid,
-                });
-            }
-        }
-
-        make_dates() {
-            for (let date of this.get_dates_to_draw()) {
-                createSVG('text', {
-                    x: date.lower_x,
-                    y: date.lower_y,
-                    innerHTML: date.lower_text,
-                    class: 'lower-text',
-                    append_to: this.layers.date,
-                });
-
-                if (date.upper_text) {
-                    const $upper_text = createSVG('text', {
-                        x: date.upper_x,
-                        y: date.upper_y,
-                        innerHTML: date.upper_text,
-                        class: 'upper-text',
-                        append_to: this.layers.date,
-                    });
-
-                    // remove out-of-bound dates
-                    if (
-                        $upper_text.getBBox().x2 > this.layers.grid.getBBox().width
-                    ) {
-                        $upper_text.remove();
-                    }
-                }
-            }
-        }
-
-        get_dates_to_draw() {
-            let last_date = null;
-            const dates = this.dates.map((date, i) => {
-                const d = this.get_date_info(date, last_date, i);
-                last_date = date;
-                return d;
-            });
-            return dates;
-        }
-
-        get_date_info(date, last_date, i) {
-            if (!last_date) {
-                last_date = date_utils.add(date, 1, 'year');
-            }
-            const date_text = {
-                'Quarter Day_lower': date_utils.format(
-                    date,
-                    'HH',
-                    this.options.language
-                ),
-                'Half Day_lower': date_utils.format(
-                    date,
-                    'HH',
-                    this.options.language
-                ),
-                Day_lower:
-                    date.getDate() !== last_date.getDate()
-                        ? date_utils.format(date, 'D', this.options.language)
-                        : '',
-                Week_lower:
-                    date.getMonth() !== last_date.getMonth()
-                        ? date_utils.format(date, 'D MMM', this.options.language)
-                        : date_utils.format(date, 'D', this.options.language),
-                Month_lower: date_utils.format(date, 'MMMM', this.options.language),
-                Year_lower: date_utils.format(date, 'YYYY', this.options.language),
-                'Quarter Day_upper':
-                    date.getDate() !== last_date.getDate()
-                        ? date_utils.format(date, 'D MMM', this.options.language)
-                        : '',
-                'Half Day_upper':
-                    date.getDate() !== last_date.getDate()
-                        ? date.getMonth() !== last_date.getMonth()
-                            ? date_utils.format(
-                                  date,
-                                  'D MMM',
-                                  this.options.language
-                              )
-                            : date_utils.format(date, 'D', this.options.language)
-                        : '',
-                Day_upper:
-                    date.getMonth() !== last_date.getMonth()
-                        ? date_utils.format(date, 'MMMM', this.options.language)
-                        : '',
-                Week_upper:
-                    date.getMonth() !== last_date.getMonth()
-                        ? date_utils.format(date, 'MMMM', this.options.language)
-                        : '',
-                Month_upper:
-                    date.getFullYear() !== last_date.getFullYear()
-                        ? date_utils.format(date, 'YYYY', this.options.language)
-                        : '',
-                Year_upper:
-                    date.getFullYear() !== last_date.getFullYear()
-                        ? date_utils.format(date, 'YYYY', this.options.language)
-                        : '',
-            };
-
-            const base_pos = {
-                x: i * this.options.column_width,
-                lower_y: this.options.header_height,
-                upper_y: this.options.header_height - 25,
-            };
-
-            const x_pos = {
-                'Quarter Day_lower': (this.options.column_width * 4) / 2,
-                'Quarter Day_upper': 0,
-                'Half Day_lower': (this.options.column_width * 2) / 2,
-                'Half Day_upper': 0,
-                Day_lower: this.options.column_width / 2,
-                Day_upper: (this.options.column_width * 30) / 2,
-                Week_lower: 0,
-                Week_upper: (this.options.column_width * 4) / 2,
-                Month_lower: this.options.column_width / 2,
-                Month_upper: (this.options.column_width * 12) / 2,
-                Year_lower: this.options.column_width / 2,
-                Year_upper: (this.options.column_width * 30) / 2,
-            };
-
-            return {
-                upper_text: date_text[`${this.options.view_mode}_upper`],
-                lower_text: date_text[`${this.options.view_mode}_lower`],
-                upper_x: base_pos.x + x_pos[`${this.options.view_mode}_upper`],
-                upper_y: base_pos.upper_y,
-                lower_x: base_pos.x + x_pos[`${this.options.view_mode}_lower`],
-                lower_y: base_pos.lower_y,
-            };
-        }
-
-        make_bars() {
-            this.bars = this.tasks.map((task) => {
-                const bar = new Bar(this, task);
-                this.layers.bar.appendChild(bar.group);
-                return bar;
-            });
-        }
-
-        make_arrows() {
-            this.arrows = [];
-            for (let task of this.tasks) {
-                let arrows = [];
-                arrows = task.dependencies
-                    .map((task_id) => {
-                        const dependency = this.get_task(task_id);
-                        if (!dependency) return;
-                        const arrow = new Arrow(
-                            this,
-                            this.bars[dependency._index], // from_task
-                            this.bars[task._index] // to_task
-                        );
-                        this.layers.arrow.appendChild(arrow.element);
-                        return arrow;
-                    })
-                    .filter(Boolean); // filter falsy values
-                this.arrows = this.arrows.concat(arrows);
-            }
-        }
-
-        map_arrows_on_bars() {
-            for (let bar of this.bars) {
-                bar.arrows = this.arrows.filter((arrow) => {
-                    return (
-                        arrow.from_task.task.id === bar.task.id ||
-                        arrow.to_task.task.id === bar.task.id
-                    );
-                });
-            }
-        }
-
-        set_width() {
-            const cur_width = this.$svg.getBoundingClientRect().width;
-            const actual_width = this.$svg
-                .querySelector('.grid .grid-row')
-                .getAttribute('width');
-            if (cur_width < actual_width) {
-                this.$svg.setAttribute('width', actual_width);
-            }
-        }
-
-        set_scroll_position() {
-            const parent_element = this.$svg.parentElement;
-            if (!parent_element) return;
-
-            const hours_before_first_task = date_utils.diff(
-                this.get_oldest_starting_date(),
-                this.gantt_start,
-                'hour'
+      map_arrows_on_bars() {
+        for (let bar of this.bars) {
+          bar.arrows = this.arrows.filter((arrow) => {
+            return (
+              arrow.from_task.task.id === bar.task.id ||
+              arrow.to_task.task.id === bar.task.id
             );
+          });
+        }
+      }
 
-            const scroll_pos =
-                (hours_before_first_task / this.options.step) *
-                    this.options.column_width -
-                this.options.column_width;
+      set_width() {
+        const cur_width = this.$svg.getBoundingClientRect().width;
+        const actual_width = this.$svg
+          .querySelector(".grid .grid-row")
+          .getAttribute("width");
+        if (cur_width < actual_width) {
+          this.$svg.setAttribute("width", actual_width);
+        }
+      }
 
-            parent_element.scrollLeft = scroll_pos;
+      set_scroll_position() {
+        const parent_element = this.$svg.parentElement;
+        if (!parent_element) return;
+
+        const hours_before_first_task = date_utils.diff(
+          this.get_oldest_starting_date(),
+          this.gantt_start,
+          "hour"
+        );
+
+        const scroll_pos =
+          (hours_before_first_task / this.options.step) *
+            this.options.column_width -
+          this.options.column_width;
+
+        parent_element.scrollLeft = scroll_pos;
+      }
+
+      bind_grid_click() {
+        $.on(
+          this.$svg,
+          this.options.popup_trigger,
+          ".grid-row, .grid-header",
+          () => {
+            this.unselect_all();
+            this.hide_popup();
+          }
+        );
+      }
+
+      bind_bar_events() {
+        let is_dragging = false;
+        let x_on_start = 0;
+        let y_on_start = 0;
+        let is_resizing_left = false;
+        let is_resizing_right = false;
+        let parent_bar_id = null;
+        let bars = []; // instanceof Bar
+        this.bar_being_dragged = null;
+
+        function action_in_progress() {
+          return is_dragging || is_resizing_left || is_resizing_right;
         }
 
-        bind_grid_click() {
-            $.on(
-                this.$svg,
-                this.options.popup_trigger,
-                '.grid-row, .grid-header',
-                () => {
-                    this.unselect_all();
-                    this.hide_popup();
-                }
-            );
-        }
+        $.on(this.$svg, "mousedown", ".bar-wrapper, .handle", (e, element) => {
+          const bar_wrapper = $.closest(".bar-wrapper", element);
 
-        bind_bar_events() {
-            let is_dragging = false;
-            let x_on_start = 0;
-            let y_on_start = 0;
-            let is_resizing_left = false;
-            let is_resizing_right = false;
-            let parent_bar_id = null;
-            let bars = []; // instanceof Bar
-            this.bar_being_dragged = null;
+          if (element.classList.contains("left")) {
+            is_resizing_left = true;
+          } else if (element.classList.contains("right")) {
+            is_resizing_right = true;
+          } else if (element.classList.contains("bar-wrapper")) {
+            is_dragging = true;
+          }
 
-            function action_in_progress() {
-                return is_dragging || is_resizing_left || is_resizing_right;
-            }
+          bar_wrapper.classList.add("active");
 
-            $.on(this.$svg, 'mousedown', '.bar-wrapper, .handle', (e, element) => {
-                const bar_wrapper = $.closest('.bar-wrapper', element);
+          x_on_start = e.offsetX;
+          y_on_start = e.offsetY;
 
-                if (element.classList.contains('left')) {
-                    is_resizing_left = true;
-                } else if (element.classList.contains('right')) {
-                    is_resizing_right = true;
-                } else if (element.classList.contains('bar-wrapper')) {
-                    is_dragging = true;
-                }
+          parent_bar_id = bar_wrapper.getAttribute("data-id");
+          const ids = [
+            parent_bar_id,
+            ...this.get_all_dependent_tasks(parent_bar_id),
+          ];
+          bars = ids.map((id) => this.get_bar(id));
 
-                bar_wrapper.classList.add('active');
+          this.bar_being_dragged = parent_bar_id;
 
-                x_on_start = e.offsetX;
-                y_on_start = e.offsetY;
+          bars.forEach((bar) => {
+            const $bar = bar.$bar;
+            $bar.ox = $bar.getX();
+            $bar.oy = $bar.getY();
+            $bar.owidth = $bar.getWidth();
+            $bar.finaldx = 0;
+          });
+        });
 
-                parent_bar_id = bar_wrapper.getAttribute('data-id');
-                const ids = [
-                    parent_bar_id,
-                    ...this.get_all_dependent_tasks(parent_bar_id),
-                ];
-                bars = ids.map((id) => this.get_bar(id));
+        $.on(this.$svg, "mousemove", (e) => {
+          if (!action_in_progress()) return;
+          const dx = e.offsetX - x_on_start;
+          e.offsetY - y_on_start;
 
-                this.bar_being_dragged = parent_bar_id;
-
-                bars.forEach((bar) => {
-                    const $bar = bar.$bar;
-                    $bar.ox = $bar.getX();
-                    $bar.oy = $bar.getY();
-                    $bar.owidth = $bar.getWidth();
-                    $bar.finaldx = 0;
+          bars.forEach((bar) => {
+            const $bar = bar.$bar;
+            $bar.finaldx = this.get_snap_position(dx);
+            this.hide_popup();
+            if (is_resizing_left) {
+              console.log(`$bar.owidth: ${$bar.owidth}`);
+              console.log(`$bar.finaldx: ${$bar.finaldx}`);
+              if (parent_bar_id === bar.task.id) {
+                bar.update_bar_position({
+                  x: $bar.ox + $bar.finaldx,
+                  width: $bar.owidth - $bar.finaldx,
                 });
-            });
-
-            $.on(this.$svg, 'mousemove', (e) => {
-                if (!action_in_progress()) return;
-                const dx = e.offsetX - x_on_start;
-                e.offsetY - y_on_start;
-
-                bars.forEach((bar) => {
-                    const $bar = bar.$bar;
-                    $bar.finaldx = this.get_snap_position(dx);
-                    this.hide_popup();
-                    if (is_resizing_left) {
-                        if (parent_bar_id === bar.task.id) {
-                            bar.update_bar_position({
-                                x: $bar.ox + $bar.finaldx,
-                                width: $bar.owidth - $bar.finaldx,
-                            });
-                        } else {
-                            bar.update_bar_position({
-                                x: $bar.ox + $bar.finaldx,
-                            });
-                        }
-                    } else if (is_resizing_right) {
-                        if (parent_bar_id === bar.task.id) {
-                            bar.update_bar_position({
-                                width: $bar.owidth + $bar.finaldx,
-                            });
-                        }
-                    } else if (is_dragging) {
-                        bar.update_bar_position({ x: $bar.ox + $bar.finaldx });
-                    }
+              } else {
+                bar.update_bar_position({
+                  x: $bar.ox + $bar.finaldx,
                 });
-            });
-
-            document.addEventListener('mouseup', (e) => {
-                if (is_dragging || is_resizing_left || is_resizing_right) {
-                    bars.forEach((bar) => bar.group.classList.remove('active'));
-                }
-
-                is_dragging = false;
-                is_resizing_left = false;
-                is_resizing_right = false;
-            });
-
-            $.on(this.$svg, 'mouseup', (e) => {
-                this.bar_being_dragged = null;
-                bars.forEach((bar) => {
-                    const $bar = bar.$bar;
-                    if (!$bar.finaldx) return;
-                    bar.date_changed();
-                    bar.set_action_completed();
+              }
+            } else if (is_resizing_right) {
+              if (parent_bar_id === bar.task.id) {
+                bar.update_bar_position({
+                  width: $bar.owidth + $bar.finaldx,
                 });
-            });
-
-            this.bind_bar_progress();
-        }
-
-        bind_bar_progress() {
-            let x_on_start = 0;
-            let y_on_start = 0;
-            let is_resizing = null;
-            let bar = null;
-            let $bar_progress = null;
-            let $bar = null;
-
-            $.on(this.$svg, 'mousedown', '.handle.progress', (e, handle) => {
-                is_resizing = true;
-                x_on_start = e.offsetX;
-                y_on_start = e.offsetY;
-
-                const $bar_wrapper = $.closest('.bar-wrapper', handle);
-                const id = $bar_wrapper.getAttribute('data-id');
-                bar = this.get_bar(id);
-
-                $bar_progress = bar.$bar_progress;
-                $bar = bar.$bar;
-
-                $bar_progress.finaldx = 0;
-                $bar_progress.owidth = $bar_progress.getWidth();
-                $bar_progress.min_dx = -$bar_progress.getWidth();
-                $bar_progress.max_dx = $bar.getWidth() - $bar_progress.getWidth();
-            });
-
-            $.on(this.$svg, 'mousemove', (e) => {
-                if (!is_resizing) return;
-                let dx = e.offsetX - x_on_start;
-                e.offsetY - y_on_start;
-
-                if (dx > $bar_progress.max_dx) {
-                    dx = $bar_progress.max_dx;
-                }
-                if (dx < $bar_progress.min_dx) {
-                    dx = $bar_progress.min_dx;
-                }
-
-                const $handle = bar.$handle_progress;
-                $.attr($bar_progress, 'width', $bar_progress.owidth + dx);
-                $.attr($handle, 'points', bar.get_progress_polygon_points());
-                $bar_progress.finaldx = dx;
-            });
-
-            $.on(this.$svg, 'mouseup', () => {
-                is_resizing = false;
-                if (!($bar_progress && $bar_progress.finaldx)) return;
-                bar.progress_changed();
-                bar.set_action_completed();
-            });
-        }
-
-        get_all_dependent_tasks(task_id) {
-            let out = [];
-            let to_process = [task_id];
-            while (to_process.length) {
-                const deps = to_process.reduce((acc, curr) => {
-                    acc = acc.concat(this.dependency_map[curr]);
-                    return acc;
-                }, []);
-
-                out = out.concat(deps);
-                to_process = deps.filter((d) => !to_process.includes(d));
+              }
+            } else if (is_dragging) {
+              bar.update_bar_position({ x: $bar.ox + $bar.finaldx });
             }
+          });
+        });
 
-            return out.filter(Boolean);
+        document.addEventListener("mouseup", (e) => {
+          if (is_dragging || is_resizing_left || is_resizing_right) {
+            bars.forEach((bar) => bar.group.classList.remove("active"));
+          }
+
+          is_dragging = false;
+          is_resizing_left = false;
+          is_resizing_right = false;
+        });
+
+        $.on(this.$svg, "mouseup", (e) => {
+          this.bar_being_dragged = null;
+          bars.forEach((bar) => {
+            const $bar = bar.$bar;
+            if (!$bar.finaldx) return;
+            bar.date_changed();
+            bar.set_action_completed();
+          });
+        });
+
+        this.bind_bar_progress();
+      }
+
+      bind_bar_progress() {
+        let x_on_start = 0;
+        let y_on_start = 0;
+        let is_resizing = null;
+        let bar = null;
+        let $bar_progress = null;
+        let $bar = null;
+
+        $.on(this.$svg, "mousedown", ".handle.progress", (e, handle) => {
+          is_resizing = true;
+          x_on_start = e.offsetX;
+          y_on_start = e.offsetY;
+
+          const $bar_wrapper = $.closest(".bar-wrapper", handle);
+          const id = $bar_wrapper.getAttribute("data-id");
+          bar = this.get_bar(id);
+
+          $bar_progress = bar.$bar_progress;
+          $bar = bar.$bar;
+
+          $bar_progress.finaldx = 0;
+          $bar_progress.owidth = $bar_progress.getWidth();
+          $bar_progress.min_dx = -$bar_progress.getWidth();
+          $bar_progress.max_dx = $bar.getWidth() - $bar_progress.getWidth();
+        });
+
+        $.on(this.$svg, "mousemove", (e) => {
+          if (!is_resizing) return;
+          let dx = e.offsetX - x_on_start;
+          e.offsetY - y_on_start;
+
+          if (dx > $bar_progress.max_dx) {
+            dx = $bar_progress.max_dx;
+          }
+          if (dx < $bar_progress.min_dx) {
+            dx = $bar_progress.min_dx;
+          }
+
+          const $handle = bar.$handle_progress;
+          $.attr($bar_progress, "width", $bar_progress.owidth + dx);
+          $.attr($handle, "points", bar.get_progress_polygon_points());
+          $bar_progress.finaldx = dx;
+        });
+
+        $.on(this.$svg, "mouseup", () => {
+          is_resizing = false;
+          if (!($bar_progress && $bar_progress.finaldx)) return;
+          bar.progress_changed();
+          bar.set_action_completed();
+        });
+      }
+
+      get_all_dependent_tasks(task_id) {
+        let out = [];
+        let to_process = [task_id];
+        while (to_process.length) {
+          const deps = to_process.reduce((acc, curr) => {
+            acc = acc.concat(this.dependency_map[curr]);
+            return acc;
+          }, []);
+
+          out = out.concat(deps);
+          to_process = deps.filter((d) => !to_process.includes(d));
         }
 
-        get_snap_position(dx) {
-            let odx = dx,
-                rem,
-                position;
+        return out.filter(Boolean);
+      }
 
-            if (this.view_is(VIEW_MODE.WEEK)) {
-                rem = dx % (this.options.column_width / 7);
-                position =
-                    odx -
-                    rem +
-                    (rem < this.options.column_width / 14
-                        ? 0
-                        : this.options.column_width / 7);
-            } else if (this.view_is(VIEW_MODE.MONTH)) {
-                rem = dx % (this.options.column_width / 30);
-                position =
-                    odx -
-                    rem +
-                    (rem < this.options.column_width / 60
-                        ? 0
-                        : this.options.column_width / 30);
-            } else {
-                rem = dx % this.options.column_width;
-                position =
-                    odx -
-                    rem +
-                    (rem < this.options.column_width / 2
-                        ? 0
-                        : this.options.column_width);
-            }
-            return position;
+      get_snap_position(dx) {
+        let odx = dx,
+          rem,
+          position;
+
+        if (this.view_is(VIEW_MODE.WEEK)) {
+          rem = dx % (this.options.column_width / 7);
+          position =
+            odx -
+            rem +
+            (rem < this.options.column_width / 14
+              ? 0
+              : this.options.column_width / 7);
+        } else if (this.view_is(VIEW_MODE.MONTH)) {
+          rem = dx % (this.options.column_width / 30);
+          position =
+            odx -
+            rem +
+            (rem < this.options.column_width / 60
+              ? 0
+              : this.options.column_width / 30);
+        } else {
+          rem = dx % this.options.column_width;
+          position =
+            odx -
+            rem +
+            (rem < this.options.column_width / 2 ? 0 : this.options.column_width);
+        }
+        return position;
+      }
+
+      unselect_all() {
+        [...this.$svg.querySelectorAll(".bar-wrapper")].forEach((el) => {
+          el.classList.remove("active");
+        });
+      }
+
+      view_is(modes) {
+        if (typeof modes === "string") {
+          return this.options.view_mode === modes;
         }
 
-        unselect_all() {
-            [...this.$svg.querySelectorAll('.bar-wrapper')].forEach((el) => {
-                el.classList.remove('active');
-            });
+        if (Array.isArray(modes)) {
+          return modes.some((mode) => this.options.view_mode === mode);
         }
 
-        view_is(modes) {
-            if (typeof modes === 'string') {
-                return this.options.view_mode === modes;
-            }
+        return false;
+      }
 
-            if (Array.isArray(modes)) {
-                return modes.some((mode) => this.options.view_mode === mode);
-            }
+      get_task(id) {
+        return this.tasks.find((task) => {
+          return task.id === id;
+        });
+      }
 
-            return false;
+      get_bar(id) {
+        return this.bars.find((bar) => {
+          return bar.task.id === id;
+        });
+      }
+
+      show_popup(options) {
+        if (!this.popup) {
+          this.popup = new Popup(
+            this.popup_wrapper,
+            this.options.custom_popup_html
+          );
         }
+        this.popup.show(options);
+      }
 
-        get_task(id) {
-            return this.tasks.find((task) => {
-                return task.id === id;
-            });
-        }
+      hide_popup() {
+        this.popup && this.popup.hide();
+      }
 
-        get_bar(id) {
-            return this.bars.find((bar) => {
-                return bar.task.id === id;
-            });
+      trigger_event(event, args) {
+        if (this.options["on_" + event]) {
+          this.options["on_" + event].apply(null, args);
         }
+      }
 
-        show_popup(options) {
-            if (!this.popup) {
-                this.popup = new Popup(
-                    this.popup_wrapper,
-                    this.options.custom_popup_html
-                );
-            }
-            this.popup.show(options);
-        }
+      /**
+       * Gets the oldest starting date from the list of tasks
+       *
+       * @returns Date
+       * @memberof Gantt
+       */
+      get_oldest_starting_date() {
+        return this.tasks
+          .map((task) => task._start)
+          .reduce((prev_date, cur_date) =>
+            cur_date <= prev_date ? cur_date : prev_date
+          );
+      }
 
-        hide_popup() {
-            this.popup && this.popup.hide();
-        }
+      /**
+       * Clear all elements from the parent svg element
+       *
+       * @memberof Gantt
+       */
+      clear() {
+        this.$svg.innerHTML = "";
+      }
 
-        trigger_event(event, args) {
-            if (this.options['on_' + event]) {
-                this.options['on_' + event].apply(null, args);
-            }
-        }
+      createElement(elementTagName, parrent, ...classNames) {
+        const el = document.createElement(elementTagName);
+        if (classNames?.length)
+          classNames
+            .filter((t) => !!t)
+            .forEach((className) => el.classList.add(className));
+        parrent.appendChild(el);
+        return el;
+      }
 
-        /**
-         * Gets the oldest starting date from the list of tasks
-         *
-         * @returns Date
-         * @memberof Gantt
-         */
-        get_oldest_starting_date() {
-            return this.tasks
-                .map((task) => task._start)
-                .reduce((prev_date, cur_date) =>
-                    cur_date <= prev_date ? cur_date : prev_date
-                );
-        }
-
-        /**
-         * Clear all elements from the parent svg element
-         *
-         * @memberof Gantt
-         */
-        clear() {
-            this.$svg.innerHTML = '';
-        }
+      createDiv(parrent, ...classNames) {
+        return this.createElement("div", parrent, ...classNames);
+      }
     }
 
     Gantt.VIEW_MODE = VIEW_MODE;
 
     function generate_id(task) {
-        return task.name + '_' + Math.random().toString(36).slice(2, 12);
+      return task.name + "_" + Math.random().toString(36).slice(2, 12);
     }
 
     return Gantt;
