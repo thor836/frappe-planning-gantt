@@ -1912,4 +1912,4 @@ var Gantt = (function () {
     return Gantt;
 
 })();
-//# sourceMappingURL=frappe-gantt.js.map
+//# sourceMappingURL=frappe-planning-gantt.js.map
